@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>360Learning Scraper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🕷️ 360Learning Scraper</h1>
+      <p class="subtitle">Extrae .content-validation → JSON</p>
+    </header>
+
+    <button id="extractBtn" class="primary-btn">
+      🔍 Extraer Datos
+    </button>
+
+    <!-- Resultados -->
+    <section id="results" class="results hidden">
+      <div class="results-header">
+        <span id="resultCount">0 resultados</span>
+        <div class="results-actions">
+          <button id="copyBtn" class="small-btn">📋 Copiar</button>
+          <button id="downloadBtn" class="small-btn">💾 JSON</button>
+        </div>
+      </div>
+      <pre id="preview"></pre>
+    </section>
+
+    <div id="status" class="status hidden"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
