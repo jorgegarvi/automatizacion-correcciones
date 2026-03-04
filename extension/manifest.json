@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "360Learning Scraper",
-  "version": "1.0.0",
-  "description": "Extrae datos de content-validation en 360Learning",
-  "permissions": ["activeTab", "scripting", "downloads"],
+  "version": "1.1.0",
+  "description": "Extrae datos de content-validation en 360Learning y descarga archivos adjuntos",
+  "permissions": ["activeTab", "scripting", "downloads", "cookies"],
+  "host_permissions": ["https://app.360learning.com/*"],
   "action": {
     "default_popup": "popup/popup.html",
     "default_icon": {

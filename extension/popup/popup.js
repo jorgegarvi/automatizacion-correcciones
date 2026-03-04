@@ -1,9 +1,15 @@
 /**
  * popup.js – Extrae .content-validation y todos sus hijos en JSON.
  * Especializado para páginas de corrección de 360Learning.
+ * v1.1 – Descarga archivos adjuntos usando la cookie de sesión del navegador.
  */
 
 let extractedData = null;
+
+// ── Configuración ──────────────────────────────────────────────
+// Pon aquí la URL de tu webhook de Make (déjalo vacío para desactivar)
+const MAKE_WEBHOOK_URL = '';
+const BASE_360 = 'https://app.360learning.com';
 
 const extractBtn   = document.getElementById('extractBtn');
 const resultsDiv   = document.getElementById('results');
@@ -11,6 +17,7 @@ const resultCount  = document.getElementById('resultCount');
 const preview      = document.getElementById('preview');
 const copyBtn      = document.getElementById('copyBtn');
 const downloadBtn  = document.getElementById('downloadBtn');
+const testDlBtn    = document.getElementById('testDownloadBtn');
 const statusDiv    = document.getElementById('status');
 
 // ── Extraer ────────────────────────────────────────────────────
@@ -25,6 +32,7 @@ extractBtn.addEventListener('click', async () => {
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
+      world: 'MAIN',            // Ejecutar en el contexto JS de la página (acceso a Vue)
       func: extractContentValidation,
     });
 
@@ -58,7 +66,7 @@ copyBtn.addEventListener('click', async () => {
   setTimeout(() => (copyBtn.textContent = '📋 Copiar'), 1500);
 });
 
-// ── Descargar ──────────────────────────────────────────────────
+// ── Descargar JSON ─────────────────────────────────────────────
 downloadBtn.addEventListener('click', () => {
   if (!extractedData) return;
   const blob = new Blob([JSON.stringify(extractedData, null, 2)], { type: 'application/json' });
@@ -66,6 +74,154 @@ downloadBtn.addEventListener('click', () => {
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   chrome.downloads.download({ url, filename: `360learning_${ts}.json`, saveAs: true });
 });
+
+// ── Test descarga (cURL simulado con cookies) ─────────────────
+if (testDlBtn) {
+  testDlBtn.addEventListener('click', async () => {
+    if (!extractedData) {
+      showStatus('⚠️ Primero extrae datos', 'error');
+      return;
+    }
+
+    // Buscar el primer adjunto con URL descargable (cualquier patrón)
+    let targetAdj = null;
+    let fileUrl = '';
+    for (const item of extractedData) {
+      if (!item.respuesta?.adjuntos) continue;
+      for (const adj of item.respuesta.adjuntos) {
+        // Probar todos los campos donde puede estar la URL
+        const candidates = [adj.urlPdf, adj.urlArchivo, adj.src, adj.iframeSrc].filter(Boolean);
+        for (const url of candidates) {
+          if (url.startsWith('/api/') || url.startsWith('/client/')) {
+            targetAdj = adj;
+            // Si es un iframe src con ?file=, extraer la URL real
+            if (url.includes('file=')) {
+              try {
+                const params = new URLSearchParams(url.split('?')[1]);
+                const f = params.get('file');
+                fileUrl = f ? decodeURIComponent(f) : url;
+              } catch { fileUrl = url; }
+            } else {
+              fileUrl = url;
+            }
+            break;
+          }
+        }
+        if (targetAdj) break;
+      }
+      if (targetAdj) break;
+    }
+
+    if (!targetAdj) {
+      showStatus('⚠️ No hay adjuntos con URL descargable.\n\nSi hay archivos sin preview (xlsx, etc.), revisa que el JSON extraído contenga mediaId o _vueError/_interceptError para diagnosticar.', 'error');
+      return;
+    }
+    testDlBtn.disabled = true;
+    testDlBtn.textContent = '⏳ Probando...';
+    showStatus(`🧪 Probando descarga de: ${targetAdj.titulo || targetAdj.tipo}\nURL: ${fileUrl}`, 'success');
+
+    try {
+      // 1. Obtener cookies
+      const cookies = await get360Cookies();
+      const cookieCount = cookies.split(';').length;
+      showStatus(`🍪 ${cookieCount} cookie(s) obtenidas. Descargando...`, 'success');
+
+      // 2. Intentar descargar
+      const fileData = await downloadFileWithCookies(fileUrl, cookies);
+
+      // 3. Guardar el archivo a disco
+      const sizeKB = (fileData.size / 1024).toFixed(1);
+      const sizeMB = (fileData.size / 1048576).toFixed(2);
+      const sizeStr = fileData.size > 1048576 ? `${sizeMB} MB` : `${sizeKB} KB`;
+
+      // Determinar extensión del archivo
+      const ext = targetAdj.tipo || 'bin';
+      const nombre = (targetAdj.titulo || 'archivo_test').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = `${nombre}.${ext}`;
+
+      // Descargar a disco con chrome.downloads
+      const dataUrl = `data:${fileData.mimeType};base64,${fileData.base64}`;
+      chrome.downloads.download({
+        url: dataUrl,
+        filename: filename,
+        saveAs: true,
+      });
+
+      const msg = [
+        `✅ ¡DESCARGA EXITOSA! Guardando como: ${filename}`,
+        ``,
+        `📄 Archivo: ${targetAdj.titulo || 'sin nombre'}`,
+        `🔗 URL: ${BASE_360}${fileUrl}`,
+        `📦 Tamaño: ${sizeStr}`,
+        `📋 MIME: ${fileData.mimeType}`,
+      ].join('\n');
+
+      showStatus(msg, 'success');
+      console.log('🧪 Test descarga OK:', { url: `${BASE_360}${fileUrl}`, size: fileData.size, mime: fileData.mimeType });
+
+    } catch (err) {
+      const msg = [
+        `❌ Error en la descarga`,
+        ``,
+        `URL: ${BASE_360}${fileUrl}`,
+        `Error: ${err.message}`,
+        ``,
+        `Posibles causas:`,
+        `• Sesión expirada (recarga 360Learning)`,
+        `• Cookie insuficiente`,
+        `• El endpoint requiere otro formato de URL`,
+      ].join('\n');
+      showStatus(msg, 'error');
+      console.error('🧪 Test descarga FALLÓ:', err);
+    }
+
+    testDlBtn.disabled = false;
+    testDlBtn.textContent = '🧪 Test descarga';
+  });
+}
+
+// ── Obtener cookies de 360Learning ─────────────────────────────
+async function get360Cookies() {
+  const cookies = await chrome.cookies.getAll({ domain: '360learning.com' });
+  return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+}
+
+// ── Descargar archivo usando las cookies de sesión ──────────────
+async function downloadFileWithCookies(relativeUrl, cookieString) {
+  const fullUrl = `${BASE_360}${relativeUrl}`;
+
+  const resp = await fetch(fullUrl, {
+    method: 'GET',
+    headers: { 'Cookie': cookieString },
+    credentials: 'include',
+  });
+
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status} al descargar ${relativeUrl}`);
+  }
+
+  const blob = await resp.blob();
+  const mimeType = resp.headers.get('content-type') || blob.type || 'application/octet-stream';
+
+  // Convertir a base64 para poder enviarlo en JSON
+  const base64 = await blobToBase64(blob);
+
+  return { base64, mimeType, size: blob.size };
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      // Quitar el prefijo "data:...;base64,"
+      const result = reader.result;
+      const base64 = result.split(',')[1] || result;
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 function showStatus(msg, type) {
   statusDiv.textContent = msg;
@@ -76,11 +232,28 @@ function showStatus(msg, type) {
 // ────────────────────────────────────────────────────────────────
 // Función inyectada en la página (contexto de la pestaña)
 // ────────────────────────────────────────────────────────────────
-function extractContentValidation() {
+async function extractContentValidation() {
   const nodes = document.querySelectorAll('.content-validation');
   if (!nodes.length) return [];
 
-  return Array.from(nodes).map((root, idx) => {
+  // Extraer companyId de cualquier URL /api/medias/ visible en la página
+  const companyId = (() => {
+    const imgs = document.querySelectorAll('img[src*="/api/medias/"]');
+    for (const img of imgs) {
+      const m = (img.getAttribute('src') || '').match(/[?&]company=([a-f0-9]{24})/i);
+      if (m) return m[1];
+    }
+    const el = document.querySelector('[src*="/api/medias/proxy/"]');
+    if (el) {
+      const m = (el.getAttribute('src') || '').match(/\/api\/medias\/proxy\/([a-f0-9]{24})/i);
+      if (m) return m[1];
+    }
+    return null;
+  })();
+
+  const results = [];
+  for (let idx = 0; idx < nodes.length; idx++) {
+    const root = nodes[idx];
     const out = { _index: idx + 1 };
 
     /* ── Usuario ─────────────────────────────────────── */
@@ -141,7 +314,8 @@ function extractContentValidation() {
     if (contentResp) {
       const wrappers = contentResp.querySelectorAll('.media-viewer-wrapper');
       if (wrappers.length > 0) {
-        out.respuesta.adjuntos = Array.from(wrappers).map((wrapper) => {
+        const adjuntosList = [];
+        for (const wrapper of wrappers) {
           const adjunto = {};
 
           // ── PDF (iframe con visor pdfjs) ─────────────────
@@ -197,6 +371,161 @@ function extractContentValidation() {
             adjunto.src = (source || videoEl).getAttribute('src') || '';
           }
 
+          // ── Archivo sin preview (xlsx, docx, zip, etc.) ──
+          const noPreview = wrapper.querySelector('.no-preview-media-viewer');
+          if (noPreview && !adjunto.tipo) {
+            adjunto.tipo = 'archivo';
+            const dlBtn = noPreview.querySelector('.no-preview-media-viewer-download');
+            if (dlBtn) adjunto.textoBoton = dlBtn.textContent.trim();
+
+            // ─── Estrategia 1: Vue component tree walk (MAIN world) ───
+            try {
+              let el = noPreview;
+              while (el && !adjunto.urlArchivo) {
+                // Vue 3: __vueParentComponent
+                const comp = el.__vueParentComponent;
+                if (comp) {
+                  let c = comp;
+                  for (let d = 0; d < 25 && c; d++) {
+                    // Buscar en props, setupState, data, ctx
+                    const sources = [
+                      c.props,
+                      c.setupState,
+                      c.data,
+                      c.ctx,
+                      c.provides,
+                    ];
+                    for (const obj of sources) {
+                      if (!obj || typeof obj !== 'object') continue;
+                      // Buscar recursivamente (1 nivel de profundidad)
+                      const searchObj = (o, depth) => {
+                        if (!o || typeof o !== 'object' || depth > 2) return;
+                        for (const [k, v] of Object.entries(o)) {
+                          if (typeof v === 'string') {
+                            if (v.includes('/api/medias/') && !v.includes('/user/') && !v.includes('/group/') && !v.includes('/logo')) {
+                              adjunto.urlArchivo = v;
+                            }
+                            if (/^[a-f0-9]{24}$/i.test(v)) {
+                              // Guardar cualquier ObjectId encontrado con su key
+                              if (!adjunto._ids) adjunto._ids = {};
+                              adjunto._ids[k] = v;
+                              if (k === '_id' || k.toLowerCase().includes('media')) {
+                                adjunto.mediaId = v;
+                              }
+                            }
+                          } else if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+                            searchObj(v, depth + 1);
+                          }
+                        }
+                      };
+                      try { searchObj(obj, 0); } catch {}
+                      if (adjunto.urlArchivo) break;
+                    }
+                    if (adjunto.urlArchivo) break;
+                    c = c.parent;
+                  }
+                  break; // Found Vue component, stop DOM walk
+                }
+                // Fallback: buscar __vue_app__ o claves __vue*
+                const vueKey = Object.keys(el).find(k => k.startsWith('__vue'));
+                if (vueKey && el[vueKey]) {
+                  const inst = el[vueKey];
+                  const searchFlat = (o) => {
+                    if (!o || typeof o !== 'object') return;
+                    for (const [k, v] of Object.entries(o)) {
+                      if (typeof v === 'string' && v.includes('/api/medias/')) adjunto.urlArchivo = v;
+                      if (typeof v === 'string' && /^[a-f0-9]{24}$/i.test(v)) {
+                        if (!adjunto._ids) adjunto._ids = {};
+                        adjunto._ids[k] = v;
+                      }
+                    }
+                  };
+                  try { searchFlat(inst.props || inst); } catch {}
+                  if (adjunto.urlArchivo) break;
+                }
+                el = el.parentElement;
+              }
+            } catch (e) { adjunto._vueError = e?.message; }
+
+            // ─── Estrategia 2: Interceptar fetch/XHR + click programático ───
+            if (!adjunto.urlArchivo && dlBtn) {
+              try {
+                const captured = await new Promise((resolve) => {
+                  const origFetch = window.fetch;
+                  const origXhrOpen = XMLHttpRequest.prototype.open;
+                  const origWindowOpen = window.open;
+                  let done = false;
+                  let timer;
+
+                  function cleanup() {
+                    if (done) return;
+                    done = true;
+                    window.fetch = origFetch;
+                    XMLHttpRequest.prototype.open = origXhrOpen;
+                    window.open = origWindowOpen;
+                    clearTimeout(timer);
+                  }
+
+                  // Interceptar fetch
+                  window.fetch = function(input, init) {
+                    const url = typeof input === 'string' ? input : input?.url || '';
+                    if (url.includes('/api/medias/') && !url.includes('/user/') && !url.includes('/group/') && !url.includes('/logo')) {
+                      cleanup();
+                      resolve(url);
+                      return Promise.resolve(new Response('', { status: 200 }));
+                    }
+                    return origFetch.apply(this, arguments);
+                  };
+
+                  // Interceptar XHR
+                  XMLHttpRequest.prototype.open = function(method, url) {
+                    if (typeof url === 'string' && url.includes('/api/medias/') && !url.includes('/user/') && !url.includes('/group/')) {
+                      cleanup();
+                      resolve(url);
+                    }
+                    return origXhrOpen.apply(this, arguments);
+                  };
+
+                  // Interceptar window.open
+                  window.open = function(url) {
+                    if (typeof url === 'string' && url.includes('/api/medias/')) {
+                      cleanup();
+                      resolve(url);
+                      return null;
+                    }
+                    return origWindowOpen.apply(this, arguments);
+                  };
+
+                  // Click programático en "Descargar el documento"
+                  dlBtn.click();
+
+                  // Timeout: si no se captura nada en 4s, darse por vencido
+                  timer = setTimeout(() => { cleanup(); resolve(null); }, 4000);
+                });
+
+                if (captured) {
+                  adjunto.urlArchivo = captured;
+                  adjunto._metodo = 'interceptado';
+                }
+              } catch (e) { adjunto._interceptError = e?.message; }
+            }
+
+            // ─── Estrategia 3: Construir URL desde mediaId + companyId ───
+            if (!adjunto.urlArchivo && adjunto.mediaId && companyId) {
+              // Intentar el patrón proxy genérico
+              adjunto.urlArchivo = `/api/medias/proxy/${companyId}/${adjunto.mediaId}/original`;
+              adjunto._metodo = 'construida';
+            }
+
+            // Limpiar campos internos de debug
+            if (adjunto._ids && !adjunto.mediaId) {
+              // Si no encontramos mediaId pero sí _ids, tomar el primer _id
+              const ids = adjunto._ids;
+              adjunto.mediaId = ids._id || ids.mediaId || Object.values(ids)[0];
+            }
+            delete adjunto._ids;
+          }
+
           // ── Fallback genérico ────────────────────────────
           if (!adjunto.tipo) {
             const mv = wrapper.querySelector('.media-viewer');
@@ -213,8 +542,9 @@ function extractContentValidation() {
 
           adjunto.htmlCompleto = wrapper.innerHTML.trim();
 
-          return adjunto;
-        });
+          adjuntosList.push(adjunto);
+        }
+        out.respuesta.adjuntos = adjuntosList;
       }
     }
 
@@ -246,6 +576,7 @@ function extractContentValidation() {
       if (t) out.comentarios = t;
     }
 
-    return out;
-  });
+    results.push(out);
+  }
+  return results;
 }
