@@ -83,96 +83,101 @@ if (testDlBtn) {
       return;
     }
 
-    // Buscar el primer adjunto con URL descargable (cualquier patrón)
-    let targetAdj = null;
-    let fileUrl = '';
+    // Recopilar TODOS los adjuntos con URL descargable
+    const allAdjuntos = [];
     for (const item of extractedData) {
       if (!item.respuesta?.adjuntos) continue;
       for (const adj of item.respuesta.adjuntos) {
-        // Probar todos los campos donde puede estar la URL
         const candidates = [adj.urlPdf, adj.urlArchivo, adj.src, adj.iframeSrc].filter(Boolean);
         for (const url of candidates) {
           if (url.startsWith('/api/') || url.startsWith('/client/')) {
-            targetAdj = adj;
-            // Si es un iframe src con ?file=, extraer la URL real
+            let resolvedUrl;
             if (url.includes('file=')) {
               try {
                 const params = new URLSearchParams(url.split('?')[1]);
                 const f = params.get('file');
-                fileUrl = f ? decodeURIComponent(f) : url;
-              } catch { fileUrl = url; }
+                resolvedUrl = f ? decodeURIComponent(f) : url;
+              } catch { resolvedUrl = url; }
             } else {
-              fileUrl = url;
+              resolvedUrl = url;
             }
-            break;
+            allAdjuntos.push({ adj, fileUrl: resolvedUrl });
+            break; // una URL por adjunto es suficiente
           }
         }
-        if (targetAdj) break;
       }
-      if (targetAdj) break;
     }
 
-    if (!targetAdj) {
+    if (allAdjuntos.length === 0) {
       showStatus('⚠️ No hay adjuntos con URL descargable.\n\nSi hay archivos sin preview (xlsx, etc.), revisa que el JSON extraído contenga mediaId o _vueError/_interceptError para diagnosticar.', 'error');
       return;
     }
     testDlBtn.disabled = true;
-    testDlBtn.textContent = '⏳ Probando...';
-    showStatus(`🧪 Probando descarga de: ${targetAdj.titulo || targetAdj.tipo}\nURL: ${fileUrl}`, 'success');
+    testDlBtn.textContent = '⏳ Descargando...';
+    showStatus(`🧪 Descargando ${allAdjuntos.length} archivo(s)...`, 'success');
 
     try {
-      // 1. Obtener cookies
+      // 1. Obtener cookies (una sola vez para todas las descargas)
       const cookies = await get360Cookies();
       const cookieCount = cookies.split(';').length;
-      showStatus(`🍪 ${cookieCount} cookie(s) obtenidas. Descargando...`, 'success');
+      showStatus(`🍪 ${cookieCount} cookie(s) obtenidas. Descargando ${allAdjuntos.length} archivo(s)...`, 'success');
 
-      // 2. Intentar descargar
-      const fileData = await downloadFileWithCookies(fileUrl, cookies);
+      const resultados = [];
+      const errores = [];
 
-      // 3. Guardar el archivo a disco
-      const sizeKB = (fileData.size / 1024).toFixed(1);
-      const sizeMB = (fileData.size / 1048576).toFixed(2);
-      const sizeStr = fileData.size > 1048576 ? `${sizeMB} MB` : `${sizeKB} KB`;
+      // 2. Descargar cada adjunto
+      for (let i = 0; i < allAdjuntos.length; i++) {
+        const { adj, fileUrl } = allAdjuntos[i];
+        showStatus(`⏳ Descargando ${i + 1}/${allAdjuntos.length}: ${adj.titulo || adj.tipo || 'archivo'}...`, 'success');
 
-      // Determinar extensión del archivo
-      const ext = targetAdj.tipo || 'bin';
-      const nombre = (targetAdj.titulo || 'archivo_test').replace(/[^a-zA-Z0-9_-]/g, '_');
-      const filename = `${nombre}.${ext}`;
+        try {
+          const fileData = await downloadFileWithCookies(fileUrl, cookies);
 
-      // Descargar a disco con chrome.downloads
-      const dataUrl = `data:${fileData.mimeType};base64,${fileData.base64}`;
-      chrome.downloads.download({
-        url: dataUrl,
-        filename: filename,
-        saveAs: true,
-      });
+          const sizeKB = (fileData.size / 1024).toFixed(1);
+          const sizeMB = (fileData.size / 1048576).toFixed(2);
+          const sizeStr = fileData.size > 1048576 ? `${sizeMB} MB` : `${sizeKB} KB`;
 
-      const msg = [
-        `✅ ¡DESCARGA EXITOSA! Guardando como: ${filename}`,
-        ``,
-        `📄 Archivo: ${targetAdj.titulo || 'sin nombre'}`,
-        `🔗 URL: ${BASE_360}${fileUrl}`,
-        `📦 Tamaño: ${sizeStr}`,
-        `📋 MIME: ${fileData.mimeType}`,
-      ].join('\n');
+          const ext = adj.tipo || 'bin';
+          const nombre = (adj.titulo || `archivo_${i + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+          const filename = `${nombre}.${ext}`;
 
-      showStatus(msg, 'success');
-      console.log('🧪 Test descarga OK:', { url: `${BASE_360}${fileUrl}`, size: fileData.size, mime: fileData.mimeType });
+          const dataUrl = `data:${fileData.mimeType};base64,${fileData.base64}`;
+          chrome.downloads.download({
+            url: dataUrl,
+            filename: filename,
+            saveAs: false, // no pedir "Guardar como" para cada archivo
+          });
+
+          resultados.push(`✅ ${filename} (${sizeStr})`);
+          console.log(`🧪 Descarga ${i + 1}/${allAdjuntos.length} OK:`, { url: `${BASE_360}${fileUrl}`, size: fileData.size, mime: fileData.mimeType });
+        } catch (err) {
+          errores.push(`❌ ${adj.titulo || adj.tipo || `archivo_${i + 1}`}: ${err.message}`);
+          console.error(`🧪 Descarga ${i + 1}/${allAdjuntos.length} FALLÓ:`, err);
+        }
+      }
+
+      // 3. Resumen final
+      const msgParts = [];
+      if (resultados.length > 0) {
+        msgParts.push(`✅ ${resultados.length}/${allAdjuntos.length} archivo(s) descargado(s):`);
+        msgParts.push('');
+        msgParts.push(...resultados);
+      }
+      if (errores.length > 0) {
+        msgParts.push('');
+        msgParts.push(`❌ ${errores.length} error(es):`);
+        msgParts.push(...errores);
+        msgParts.push('');
+        msgParts.push('Posibles causas:');
+        msgParts.push('• Sesión expirada (recarga 360Learning)');
+        msgParts.push('• Cookie insuficiente');
+        msgParts.push('• El endpoint requiere otro formato de URL');
+      }
+      showStatus(msgParts.join('\n'), errores.length > 0 ? 'error' : 'success');
 
     } catch (err) {
-      const msg = [
-        `❌ Error en la descarga`,
-        ``,
-        `URL: ${BASE_360}${fileUrl}`,
-        `Error: ${err.message}`,
-        ``,
-        `Posibles causas:`,
-        `• Sesión expirada (recarga 360Learning)`,
-        `• Cookie insuficiente`,
-        `• El endpoint requiere otro formato de URL`,
-      ].join('\n');
-      showStatus(msg, 'error');
-      console.error('🧪 Test descarga FALLÓ:', err);
+      showStatus(`❌ Error general: ${err.message}`, 'error');
+      console.error('🧪 Error general en descargas:', err);
     }
 
     testDlBtn.disabled = false;
