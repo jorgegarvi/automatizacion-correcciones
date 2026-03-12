@@ -1,0 +1,10 @@
+.env
+extension/popup/config.js
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+*.swp

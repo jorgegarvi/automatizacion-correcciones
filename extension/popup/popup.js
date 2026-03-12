@@ -7,8 +7,7 @@
 let extractedData = null;
 
 // ── Configuración ──────────────────────────────────────────────
-// Pon aquí la URL de tu webhook de Make (déjalo vacío para desactivar)
-const MAKE_WEBHOOK_URL = '';
+// MAKE_WEBHOOK_URL y MAKE_API_KEY se cargan desde config.js (ver .gitignore)
 const BASE_360 = 'https://app.360learning.com';
 
 const extractBtn   = document.getElementById('extractBtn');
@@ -18,6 +17,7 @@ const preview      = document.getElementById('preview');
 const copyBtn      = document.getElementById('copyBtn');
 const downloadBtn  = document.getElementById('downloadBtn');
 const testDlBtn    = document.getElementById('testDownloadBtn');
+const makeBtn      = document.getElementById('makeBtn');
 const statusDiv    = document.getElementById('status');
 
 // ── Extraer ────────────────────────────────────────────────────
@@ -57,6 +57,33 @@ extractBtn.addEventListener('click', async () => {
   extractBtn.disabled = false;
   extractBtn.textContent = '🔍 Extraer Datos';
 });
+
+// ── Enviar a Make ─────────────────────────────────────────────
+if (makeBtn) {
+  makeBtn.addEventListener('click', async () => {
+    if (!extractedData) return;
+    makeBtn.disabled = true;
+    makeBtn.textContent = '⏳ Enviando...';
+    try {
+      const resp = await fetch(MAKE_WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-make-apikey': MAKE_API_KEY,
+        },
+        body: JSON.stringify(extractedData),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      showStatus('✅ Datos enviados a Make correctamente', 'success');
+      makeBtn.textContent = '✅ Enviado';
+      setTimeout(() => (makeBtn.textContent = '🚀 Enviar a Make'), 2000);
+    } catch (err) {
+      showStatus('❌ Error al enviar a Make: ' + err.message, 'error');
+      makeBtn.textContent = '🚀 Enviar a Make';
+    }
+    makeBtn.disabled = false;
+  });
+}
 
 // ── Copiar ─────────────────────────────────────────────────────
 copyBtn.addEventListener('click', async () => {

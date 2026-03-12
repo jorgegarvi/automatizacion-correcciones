@@ -40,6 +40,8 @@ header h1 { font-size: 17px; color: #00d4ff; }
 .small-btn:hover { border-color: #00d4ff; color: #00d4ff; }
 .test-btn { border-color: #f59e0b; color: #fbbf24; }
 .test-btn:hover { border-color: #f59e0b; color: #fcd34d; background: #1a1500; }
+.make-btn { border-color: #6366f1; color: #818cf8; }
+.make-btn:hover { border-color: #6366f1; color: #a5b4fc; background: #0d0d1f; }
 
 #preview {
   padding: 10px; background: #0a0a1a;
